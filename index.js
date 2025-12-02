@@ -218,7 +218,10 @@ fastify.get("/scrape", async (req, reply) => {
 });
 
 // ---- START ----
-fastify.listen({ port: process.env.PORT }, (err, address) => {
-  if (err) throw err;
-  console.log("Server running:", address);
-});
+fastify.listen(
+  { port: process.env.PORT, host: process.env.LISTEN },
+  (err, address) => {
+    if (err) throw err;
+    console.log("Server running:", address);
+  }
+);

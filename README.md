@@ -8,6 +8,7 @@ like the name says, this is a simple scraper for google photos albums that retur
 2. run `npm install`
 3. create a `.env` file in the root directory (or add to your environment variables) with the following content:
    ```
+   LISTEN=0.0.0.0
    PORT=8080
    API_KEY=your_api_key_here
    CACHE_TTL_MS=259200000
