@@ -1,0 +1,19 @@
+{
+  "name": "google-photos-album-scraper",
+  "version": "1.0.0",
+  "description": "scrapes google photos albums and returns images as json",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [],
+  "author": "pnxl",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "dotenv": "^17.2.3",
+    "fastify": "^5.6.2",
+    "node-fetch": "^3.3.2"
+  }
+}
