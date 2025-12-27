@@ -38,7 +38,8 @@ like the name says, this is a simple scraper for google photos albums that pushe
    - focalLength: float4 (nullable)
    - iso: float4 (nullable)
 3. set up your RLS policies to your liking (or disable RLS for testing purposes)
-4. add the name of the database to `SUPABASE_DB_NAME` in the `.env` file
+4. generate types for the database by going to [this link](https://supabase.com/dashboard/project/_/api?page=tables-intro). save it in the root directory of this project.
+5. add the name of the database to `SUPABASE_DB_NAME` in the `.env` file
 
 ### Storage Setup
 
