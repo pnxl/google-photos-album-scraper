@@ -1,143 +1,123 @@
-import fs from "fs";
-import path from "path";
 import fetch from "node-fetch";
-import Fastify from "fastify";
-import cors from "@fastify/cors";
 import dotenv from "dotenv";
+import { createClient } from "@supabase/supabase-js";
+import sharp from "sharp";
+
 dotenv.config();
 
-const fastify = Fastify({ logger: true });
+const supabase = createClient(
+  process.env.SUPABASE_INSTANCE_URL,
+  process.env.SUPABASE_SECRET_KEY
+);
 
-const CACHE_DIR = "./cache";
+// fetch current database and see if a picture already exists
+const { data } = await supabase.from("singles").select("link");
 
-// Ensure cache directory exists
-if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR);
+// fetch album html
+console.log("Scraping Google Photos album...");
+const albumHtml = await fetch(process.env.GOOGLE_PHOTOS_ALBUM_URL, {
+  headers: { "User-Agent": "Mozilla/5.0" },
+}).then((r) => r.text());
 
-// -----------------------------------------------
-// UTIL: Load cache if exists and not expired
-// -----------------------------------------------
-function loadCache(cacheKey) {
-  const file = path.join(CACHE_DIR, cacheKey + ".json");
-  if (!fs.existsSync(file)) return null;
+if (process.env.DEBUG) {
+  console.log("Fetched album HTML, size:", albumHtml.length);
+}
 
-  try {
-    const data = JSON.parse(fs.readFileSync(file, "utf8"));
-    const now = Date.now();
-    if (now > data.expiry) {
-      fs.unlinkSync(file);
-      return null;
-    }
-    return data.payload;
-  } catch {
-    return null;
+// extract script blocks
+const scriptBlocks = albumHtml.match(/<script[^>]*>([\s\S]*?)<\/script>/g);
+
+if (process.env.DEBUG) {
+  console.log("Number of script blocks found:", scriptBlocks.length);
+}
+
+if (!scriptBlocks) {
+  console.error("No script blocks found!");
+  process.exit(1);
+}
+
+let metaScript = null;
+for (const block of scriptBlocks) {
+  if (block.includes("data:[null,[[")) {
+    metaScript = block;
+    break;
   }
 }
 
-// -----------------------------------------------
-// UTIL: Save cache with TTL (ms)
-// -----------------------------------------------
-function saveCache(cacheKey, payload, ttlMs) {
-  const file = path.join(CACHE_DIR, cacheKey + ".json");
-  const wrapper = {
-    expiry: Date.now() + ttlMs,
-    payload,
-  };
-  fs.writeFileSync(file, JSON.stringify(wrapper, null, 2));
+if (!metaScript) {
+  console.error("No metadata array found!");
+  process.exit(1);
 }
 
-// ---- CORS ----
-fastify.register(cors, {
-  origin: "*",
-  methods: ["GET"],
-  allowedHeaders: ["x-api-key"],
-});
+if (process.env.DEBUG) {
+  console.log("Metadata script found.");
+}
 
-// ---- API KEY MIDDLEWARE ----
-fastify.addHook("preHandler", async (req, reply) => {
-  const key = req.headers["x-api-key"];
-  if (!key || key !== process.env.API_KEY) {
-    reply.code(401);
-    return { error: "Unauthorised" };
+// find the data array
+const arrayStart = metaScript.indexOf("[[");
+const arrayEnd = metaScript.indexOf("]]}]]") + 5;
+const arrayText = metaScript.substring(arrayStart, arrayEnd);
+
+if (process.env.DEBUG) {
+  console.log("Found data array.");
+}
+
+// parse the data array
+let parsed;
+try {
+  parsed = JSON.parse(arrayText);
+  if (process.env.DEBUG) {
+    console.log("Parsed data array:", parsed);
   }
-});
+} catch (err) {
+  console.error("JSON parse failed:", err);
+  console.log(arrayText);
+  process.exit(1);
+}
 
-// ---- ROUTE ----
-fastify.get("/scrape", async (req, reply) => {
-  const albumUrl = req.query.url;
-  if (!albumUrl) {
-    reply.code(400);
-    return { error: "Missing ?url=" };
-  }
+const firstItems = parsed.map((item) => `${item[0]}`);
 
-  const cacheKey = Buffer.from(albumUrl).toString("base64");
+const albumIdMatch =
+  process.env.GOOGLE_PHOTOS_ALBUM_URL.match(/share\/([^\/?]+)/);
+const albumKeyMatch = process.env.GOOGLE_PHOTOS_ALBUM_URL.match(/key=([^&]+)/);
 
-  // 1. CACHE CHECK
-  const cached = loadCache(cacheKey);
-  if (cached) {
-    console.log("CACHE HIT");
-    return reply.send(cached);
-  }
-  console.log("CACHE MISS");
+if (!albumIdMatch || !albumKeyMatch) {
+  console.error("Cannot extract album ID/key");
+  process.exit(1);
+}
 
-  // 2. FETCH ALBUM HTML
-  const albumHtml = await fetch(albumUrl, {
-    headers: { "User-Agent": "Mozilla/5.0" },
-  }).then((r) => r.text());
+if (process.env.DEBUG) {
+  console.log("Matched album ID/key:", albumIdMatch, albumKeyMatch);
+}
 
-  console.log("Album HTML length:", albumHtml.length);
+const albumId = albumIdMatch[1];
+const albumKey = albumKeyMatch[1];
 
-  // 1. extract script blocks
-  const scriptBlocks = albumHtml.match(/<script[^>]*>([\s\S]*?)<\/script>/g);
-  if (!scriptBlocks) console.log("No script blocks found");
+// find all photo page URLs
+const photoUris = firstItems.map(
+  (id) =>
+    `https://photos.google.com/share/${albumId}/photo/${id}?key=${albumKey}`
+);
 
-  let metaScript = null;
-  for (const block of scriptBlocks) {
-    if (block.includes("data:[null,[[")) {
-      metaScript = block;
-      break;
+if (process.env.DEBUG) {
+  console.log("Photo URIs found:", photoUris.length);
+}
+
+// individual photos
+const results = [];
+
+for (const pageUrl of photoUris) {
+  const exists = data.some((item) => item.link === pageUrl);
+
+  if (exists === true) {
+    // skip fetching if already in database
+    if (process.env.DEBUG) {
+      console.log("Skipping existing photo:", pageUrl);
     }
-  }
-
-  if (!metaScript) console.log("No metadata script found");
-  console.log("Found metadata script");
-
-  const arrayStart = metaScript.indexOf("[[");
-  const arrayEnd = metaScript.indexOf("]]}]]") + 5;
-  const arrayText = metaScript.substring(arrayStart, arrayEnd);
-
-  let parsed;
-  try {
-    parsed = JSON.parse(arrayText);
-  } catch (err) {
-    console.log("JSON parse failed:", err);
-    console.log(arrayText.slice(0, 1000));
-    return reply.send({ error: "Parse failed" });
-  }
-
-  const firstItems = parsed.map((item) => `${item[0]}`);
-
-  const albumIdMatch = albumUrl.match(/share\/([^\/?]+)/);
-  const albumKeyMatch = albumUrl.match(/key=([^&]+)/);
-
-  if (!albumIdMatch || !albumKeyMatch) {
-    console.log("Cannot extract album ID/key");
-    return reply.send([]);
-  }
-
-  const albumId = albumIdMatch[1];
-  const albumKey = albumKeyMatch[1];
-
-  const photoUris = firstItems.map(
-    (id) =>
-      `https://photos.google.com/share/${albumId}/photo/${id}?key=${albumKey}`
-  );
-
-  console.log("Photo pages:", photoUris.length);
-
-  const results = [];
-
-  for (const pageUrl of photoUris) {
-    console.log("Fetching photo page:", pageUrl);
+  } else {
+    // fetch each photo page
+    if (process.env.DEBUG) {
+      console.log("\nFetching photo page.");
+    }
 
     const html = await fetch(pageUrl, {
       headers: { "User-Agent": "Mozilla/5.0" },
@@ -145,6 +125,10 @@ fastify.get("/scrape", async (req, reply) => {
 
     const scriptBlocks = html.match(/<script[^>]*>([\s\S]*?)<\/script>/g);
     if (!scriptBlocks) continue;
+
+    if (process.env.DEBUG) {
+      console.log("Script blocks found on photo page.");
+    }
 
     let metaScript = null;
     for (const block of scriptBlocks) {
@@ -155,6 +139,10 @@ fastify.get("/scrape", async (req, reply) => {
     }
     if (!metaScript) continue;
 
+    if (process.env.DEBUG) {
+      console.log("Metadata found on photo page.");
+    }
+
     const arrayText = metaScript.substring(
       metaScript.indexOf("[["),
       metaScript.lastIndexOf("]") + 1
@@ -163,14 +151,20 @@ fastify.get("/scrape", async (req, reply) => {
     let parsed;
     try {
       parsed = JSON.parse(arrayText);
+
+      if (process.env.DEBUG) {
+        console.log("Parsed metadata.");
+      }
     } catch (err) {
       continue;
     }
 
+    // add photo to results
     const root = parsed[0];
     const info = root[1];
 
-    const link = info[0];
+    const link = pageUrl;
+    const image = `${info[0]}`;
     const width = info[1];
     const height = info[2];
 
@@ -183,6 +177,7 @@ fastify.get("/scrape", async (req, reply) => {
 
     let formatted = {
       link,
+      image,
       width,
       height,
       takenTimestamp,
@@ -196,32 +191,58 @@ fastify.get("/scrape", async (req, reply) => {
       if (make) formatted.make = make;
       if (model) formatted.model = model;
       if (lens) formatted.lens = lens;
-      if (focal) formatted.focal_length = focal;
+      if (focal) formatted.focalLength = focal;
       if (aperture) formatted.aperture = aperture;
       if (iso) formatted.iso = iso;
-      if (shutter) formatted.shutter_speed = shutter;
+      if (shutter) formatted.shutterSpeed = shutter;
     }
 
-    results.push(formatted);
+    const { data, error } = await supabase
+      .from("singles")
+      .insert(formatted)
+      .select();
+
+    if (error === null) {
+      console.log(`Pushed ${link} to Supabase.`);
+    } else {
+      console.error(`Error inserting ${link} into Supabase:`, error);
+      process.exit(1);
+    }
+
+    // optimise image as webp to reduce storage size
+    const imageResponse = await fetch(`${info[0]}=w1200-h1200`).then((r) =>
+      r.arrayBuffer()
+    );
+
+    if (process.env.DEBUG) {
+      console.log("Fetched image for photo page:", pageUrl);
+    }
+
+    const webpBuffer = await sharp(Buffer.from(imageResponse))
+      .resize({ width: 1200, withoutEnlargement: true })
+      .webp({ quality: 80, effort: 6 })
+      .toBuffer();
+
+    if (process.env.DEBUG) {
+      console.log("Converted image to webp.");
+    }
+
+    const singlesStorage = await supabase.storage
+      .from("singles")
+      .upload(`${data[0].id}.webp`, webpBuffer, {
+        contentType: "image/webp",
+      });
+
+    if (singlesStorage.error !== null) {
+      console.error(
+        `Error uploading image for ${link} to Supabase storage:`,
+        singlesStorage.error
+      );
+      process.exit(1);
+    }
+
+    if (process.env.DEBUG) {
+      console.log("Inserted webp image into Supabase storage.");
+    }
   }
-
-  console.log("Final extracted count:", results.length);
-
-  // Save cache for 3 days (259200000 ms)
-  saveCache(cacheKey, results, process.env.CACHE_TTL_MS || 259200000);
-
-  reply.header("Access-Control-Allow-Origin", "*");
-  reply.header("Access-Control-Allow-Methods", "GET");
-  reply.header("Access-Control-Allow-Headers", "Content-Type");
-
-  return reply.send(results);
-});
-
-// ---- START ----
-fastify.listen(
-  { port: process.env.PORT, host: process.env.LISTEN },
-  (err, address) => {
-    if (err) throw err;
-    console.log("Server running:", address);
-  }
-);
+}

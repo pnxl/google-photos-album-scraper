@@ -1,6 +1,6 @@
 # google-photos-album-scraper
 
-like the name says, this is a simple scraper for google photos albums that returns all images as json
+like the name says, this is a simple scraper for google photos albums that pushes each image to a Supabase storage pool and database.
 
 ## Usage
 
@@ -8,52 +8,46 @@ like the name says, this is a simple scraper for google photos albums that retur
 2. run `npm install`
 3. create a `.env` file in the root directory (or add to your environment variables) with the following content:
    ```
-   LISTEN=0.0.0.0
-   PORT=8080
-   API_KEY=your_api_key_here
-   CACHE_TTL_MS=259200000
+   GOOGLE_PHOTOS_ALBUM_URL=
+   SUPABASE_INSTANCE_URL=
+   SUPABASE_SECRET_KEY=
+   SUPABASE_DB_NAME=
+   SUPABASE_POOL_NAME=
+   DEBUG=false
    ```
-4. start the server with `npm start`
-5. access the scraper via `http://localhost:8080/scrape?url=YOUR_ALBUM_URL`, and pass your API key in the `x-api-key` header
+4. start the scraper with `node .`
+5. the scraper will start scraping the album and pushing images (and its metadata) to Supabase.
 
-## API
+### Database Setup
 
-- `GET /scrape?url=ALBUM_URL`: scrapes the provided Google Photos album URL and returns a JSON array of image URLs.
-  - headers:
-    - `x-api-key`: your API key as specified in the `.env` file.
-  - response:
-    - `200 OK`: returns a JSON array of image URLs.
-    - `400 Bad Request`: if the URL parameter is missing or invalid.
-    - `401 Unauthorized`: if the API key is missing or incorrect.
-    - `500 Internal Server Error`: if an error occurs during scraping.
+1. create a new project on [Supabase](https://supabase.com/)
+2. create a new database table with the following schema:
+   - id: int8 (primary, unique, identity)
+   - link: text (unique)
+   - image: text (unique)
+   - width: int2
+   - height: int2
+   - addedTimestamp: int8
+   - takenTimestamp: int8
+   - description: text (default value: 'untitled')
+   - make: text (default value: 'Unknown')
+   - model: text (default value: 'Camera')
+   - lens: text (nullable)
+   - aperture: float4 (nullable)
+   - shutterSpeed: float4 (nullable)
+   - focalLength: float4 (nullable)
+   - iso: float4 (nullable)
+3. set up your RLS policies to your liking (or disable RLS for testing purposes)
+4. add the name of the database to `SUPABASE_DB_NAME` in the `.env` file
 
-## Schema
+### Storage Setup
 
-each item in the returned JSON array has the following structure:
+1. create a new storage pool in the same Supabase project
+2. set up your RLS policies to your liking (or disable RLS for testing purposes)
+3. set the name of the storage pool to `SUPABASE_POOL_NAME` in the `.env` file
 
-```json
-{
-  "link": "string", // low resolution link to the image. to obtain the original, simply append `=s0-d-ip` to the url
-  "width": number, // width of the image in pixels
-  "height": number, // height of the image in pixels
-  "takenTimestamp": number, // timestamp when the photo was taken (in unix epoch, milliseconds)
-  "addedTimestamp": number, // timestamp when the photo was added to the album (in unix epoch, milliseconds)
-  "description": "string", // description/caption of the image
-  "make": "string", // camera make
-  "model": "string", // camera model
-  "lens": "string", // lens model
-  "focal_length": number, // focal length in mm
-  "aperture": number, // aperture value
-  "iso": number, // ISO value
-  "shutter_speed": number // shutter speed in seconds
-}
-```
-
-## Caching
-
-responses are cached for a duration specified by `CACHE_TTL_MS` in the `.env` file (default is 3 days).
-
-subsequent requests for the same album URL within this period will return the cached results.
+> [!TIP]
+> Set up a cron job to run the scraper at regular intervals. You can do this with Task Scheduler on Windows, cron on Linux, or launchd on macOS.
 
 ## License
 
