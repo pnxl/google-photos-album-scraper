@@ -11,7 +11,14 @@ const supabase = createClient(
 );
 
 // fetch current database and see if a picture already exists
-const { data } = await supabase.from("singles").select("link");
+const { data: existingSingles, error: existingSinglesError } = await supabase
+  .from("singles")
+  .select("id, link");
+
+if (existingSinglesError) {
+  console.error("Error fetching existing photos from Supabase:", existingSinglesError);
+  process.exit(1);
+}
 
 // fetch album html
 console.log("Scraping Google Photos album...");
@@ -102,11 +109,49 @@ if (process.env.DEBUG) {
   console.log("Photo URIs found:", photoUris.length);
 }
 
+const albumPhotoLinks = new Set(photoUris);
+const removedSingles = existingSingles.filter(
+  (item) => !albumPhotoLinks.has(item.link)
+);
+
+if (removedSingles.length > 0) {
+  const removedIds = removedSingles.map((item) => `${item.id}.webp`);
+  const removedStorage = await supabase.storage
+    .from("singles")
+    .remove(removedIds);
+
+  if (removedStorage.error) {
+    console.error(
+      "Error removing photos from Supabase storage:",
+      removedStorage.error
+    );
+    process.exit(1);
+  }
+
+  const { error: removedRowsError } = await supabase
+    .from("singles")
+    .delete()
+    .in(
+      "id",
+      removedSingles.map((item) => item.id)
+    );
+
+  if (removedRowsError) {
+    console.error(
+      "Error removing photos from Supabase:",
+      removedRowsError
+    );
+    process.exit(1);
+  }
+
+  console.log(`Removed ${removedSingles.length} photo(s) no longer in the album.`);
+}
+
 // individual photos
 const results = [];
 
 for (const pageUrl of photoUris) {
-  const exists = data.some((item) => item.link === pageUrl);
+  const exists = existingSingles.some((item) => item.link === pageUrl);
 
   if (exists === true) {
     // skip fetching if already in database
@@ -171,7 +216,11 @@ for (const pageUrl of photoUris) {
     const takenTimestamp = root[2] ?? null;
     const addedTimestamp = root[5] ?? null;
 
-    const description = root[10]?.["396644657"]?.[0] || null;
+    const descriptionText = root[10]?.["396644657"]?.[0];
+    const description =
+      typeof descriptionText === "string" && descriptionText.trim().length > 0
+        ? descriptionText
+        : null;
 
     const exif = info?.[8]?.[4] || null;
 

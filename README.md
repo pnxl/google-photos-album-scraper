@@ -29,7 +29,7 @@ like the name says, this is a simple scraper for google photos albums that pushe
    - height: int2
    - addedTimestamp: int8
    - takenTimestamp: int8
-   - description: text (default value: 'untitled')
+   - description: text (nullable, with no default)
    - make: text (default value: 'Unknown')
    - model: text (default value: 'Camera')
    - lens: text (nullable)
